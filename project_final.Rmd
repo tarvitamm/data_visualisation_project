@@ -198,18 +198,36 @@ ggplot(scatter_data, aes(x = month, y = mean_pass_rate, color = BYROO)) +
 ```
 
 ```{r}
-# Load necessary libraries
 library(sf)
 library(ggplot2)
 library(dplyr)
 library(scales)
+library(lubridate)
 
-# Read the shapefile (make sure to set the correct file path)
-shapefile_path <- "maakond.shp"  # Replace with the correct path to your .shp file
-estonia_map <- st_read(shapefile_path)
+# Load and clean data
+df_2021 <- read.csv("se_2021.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2022 <- read.csv("se_2022.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2023 <- read.csv("se_2023.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2024 <- read.csv("se_2024.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 
-# Preview the shapefile to check column names
-print(estonia_map)
+# Assume preprocess_data is defined earlier
+cleaned_2021 <- preprocess_data(df_2021)
+cleaned_2022 <- preprocess_data(df_2022)
+cleaned_2023 <- preprocess_data(df_2023)
+cleaned_2024 <- preprocess_data(df_2024)
+
+df <- bind_rows(cleaned_2021, cleaned_2022, cleaned_2023, cleaned_2024)
+
+# Only keep the first attempt for each exam taker
+df_first_attempt <- df %>%
+  arrange(EKSAMI_SOORITAJA, KUUPAEV) %>%  # Sort by exam taker and date
+  group_by(EKSAMI_SOORITAJA) %>%  # Group by exam taker
+  slice_head(n = 1) %>%  # Take only the first attempt
+  ungroup()
+
+# Calculate the overall first attempt pass rate
+overall_pass_rate <- mean(df_first_attempt$SEISUND == "SOORITATUD", na.rm = TRUE) * 100
+cat("Overall First Attempt Pass Rate: ", round(overall_pass_rate, 2), "%\n\n")
 
 # Mapping BYROO to counties
 byroo_to_county <- data.frame(
@@ -219,23 +237,36 @@ byroo_to_county <- data.frame(
              "Saare maakond", "Valga maakond", "Harju maakond", "Lääne-Viru maakond", "Ida-Viru maakond", "Rapla maakond", "Järva maakond", "Hiiu maakond", "Harju maakond")
 )
 
-# Summarize pass rates by county
-county_summary <- city_summary %>%
+# Summarize pass rates and total exams by county for Category B exams only
+county_summary <- df_first_attempt %>%
+  filter(KATEGOORIA == "B") %>%  # Only category B exams
   left_join(byroo_to_county, by = "BYROO") %>%
   group_by(COUNTY) %>%
-  summarise(avg_pass_rate = mean(pass_rate, na.rm = TRUE), .groups = "drop")
+  summarise(
+    total_exams = n(),  # Count total exams
+    avg_pass_rate = mean(SEISUND == "SOORITATUD", na.rm = TRUE) * 100,  # Calculate pass rate
+    .groups = "drop"
+  )
 
-# Merge county pass rate data with the shapefile
+# Print county-level first attempt pass rates and exam counts
+cat("County-Level First Attempt Pass Rates and Exam Counts:\n")
+print(county_summary)
+
+# Read the shapefile (make sure to set the correct file path)
+shapefile_path <- "maakond.shp"  # Replace with the correct path to your .shp file
+estonia_map <- st_read(shapefile_path)
+
+# Merge pass rate data with shapefile
 estonia_map <- estonia_map %>%
-  left_join(county_summary, by = c("MNIMI" = "COUNTY"))  # Use the correct column name from shapefile
+  left_join(county_summary, by = c("MNIMI" = "COUNTY"))  # Use correct column for county
 
-# Plot the static map
+# Plot the map
 plot <- ggplot(estonia_map) +
-  geom_sf(aes(fill = avg_pass_rate), color = "black") +  # Color counties by pass rate
+  geom_sf(aes(fill = avg_pass_rate), color = "black") +
   scale_fill_gradient(low = "white", high = "darkred", na.value = "grey90", labels = percent_format(accuracy = 1)) +
   labs(
-    title = "Driving Exam Pass Rates by County in Estonia",
-    subtitle = "Color indicates average pass rate for category B exams (2021–2024)",
+    title = "Driving Exam Pass Rates by County in Estonia (First Attempt Only)",
+    subtitle = "Color indicates average pass rate for first attempts at Category B exams (2021–2024)",
     fill = "Pass Rate"
   ) +
   theme_minimal(base_size = 14) +
@@ -246,8 +277,8 @@ plot <- ggplot(estonia_map) +
     axis.ticks = element_blank()
   )
 
-ggsave(filename = "estonia_pass_rate_map.png", plot = plot, width = 10, height = 7, dpi = 300)
-
+# Save the plot as an image
+ggsave(filename = "estonia_pass_rate_map_first_attempts.png", plot = plot, width = 10, height = 7, dpi = 300)
 
 ```
 ```{r}
