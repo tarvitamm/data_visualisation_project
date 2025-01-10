@@ -1,0 +1,136 @@
+---
+title: "Project"
+author: "Tarvi Tamm"
+date: "2025-01-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(forcats)    # for fct_lump() or fct_reorder()
+library(scales)     # for percentage scales
+
+```
+
+
+```{r}
+preprocess_data <- function(df) {
+  # 1. Convert date column (KUUPAEV) to Date
+  df <- df %>%
+    mutate(
+      KUUPAEV = ymd(KUUPAEV)  # Convert "YYYY-MM-DD" to Date
+    )
+  
+  # 2. Convert empty strings to NA and remove rows with NA in crucial columns
+  df <- df %>%
+    mutate(
+      BYROO            = na_if(BYROO, ""),
+      VIIMANE_AUTOKOOL = na_if(VIIMANE_AUTOKOOL, ""),
+      SEISUND          = na_if(SEISUND, ""),
+      KATEGOORIA       = na_if(KATEGOORIA, "")
+    ) %>%
+    filter(
+      !is.na(KUUPAEV),
+      !is.na(BYROO),
+      !is.na(VIIMANE_AUTOKOOL),
+      !is.na(SEISUND),
+      !is.na(KATEGOORIA)
+    )
+  
+  # 3. (Optional) Remove rows with out-of-range values for KESTUS (exam duration)
+  if ("KESTUS" %in% colnames(df)) {
+    df <- df %>%
+      filter(KESTUS >= 5 & KESTUS <= 360)
+  }
+  
+  # 4. Remove exact duplicates
+  df <- df %>%
+    distinct()
+  
+  return(df)  # Return the cleaned dataframe
+}
+
+```
+
+```{r}
+df_2021 <- read.csv("se_2021.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2022 <- read.csv("se_2022.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2023 <- read.csv("se_2023.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2024 <- read.csv("se_2024.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+
+
+cleaned_2021 <- preprocess_data(df_2021)
+cleaned_2022 <- preprocess_data(df_2022)
+cleaned_2023 <- preprocess_data(df_2023)
+cleaned_2024 <- preprocess_data(df_2024)
+
+df_all_years <- bind_rows(cleaned_2021, cleaned_2022, cleaned_2023, cleaned_2024)
+
+```
+
+
+```{r}
+df_all_years <- df %>%
+  mutate(
+    KUUPAEV = ymd(KUUPAEV)  # parse "YYYY-MM-DD" using lubridate
+  )
+
+```
+
+```{r}
+df_pass_rate <- df_all_years %>%
+  mutate(year_month = floor_date(KUUPAEV, unit = "month")) %>%
+  group_by(year_month, VIIMANE_AUTOKOOL, BYROO) %>%
+  summarise(
+    total_exams = n(),
+    passes      = sum(SEISUND %in% c("Läbis", "PASS"), na.rm = TRUE),
+    pass_rate   = passes / total_exams,
+    .groups     = "drop"
+  )
+```
+
+```{r}
+# 1. Count total exams per school
+top_schools <- df_pass_rate %>%
+  group_by(VIIMANE_AUTOKOOL) %>%
+  summarise(all_exams = sum(total_exams)) %>%
+  slice_max(all_exams, n = 10) %>%  # keep top 10
+  pull(VIIMANE_AUTOKOOL)
+
+# 2. Filter df_pass_rate to only those top 10 schools
+df_pass_rate <- df_pass_rate %>%
+  filter(VIIMANE_AUTOKOOL %in% top_schools)
+
+```
+
+
+```{r}
+ggplot(df_pass_rate, aes(x = year_month, y = pass_rate, color = VIIMANE_AUTOKOOL)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ BYROO) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "1 month") +
+  labs(
+    title    = "Monthly Pass Rate by Teaching Company and Bureau",
+    subtitle = "Showing how the last teaching company influences pass rate over time across bureaus",
+    x        = "Month",
+    y        = "Pass Rate",
+    color    = "Last Teaching School"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+    panel.border = element_blank(),
+    strip.text   = element_text(face = "bold")
+  )
+
+```
+

@@ -1,0 +1,256 @@
+---
+title: "project2"
+author: "Tarvi Tamm"
+date: "2025-01-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load necessary libraries
+library(shiny)
+library(leaflet)
+library(dplyr)
+library(lubridate)
+library(scales)
+library(glue)
+
+# Load and clean data
+df_2021 <- read.csv("se_2021.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2022 <- read.csv("se_2022.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2023 <- read.csv("se_2023.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+df_2024 <- read.csv("se_2024.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
+
+# Assume preprocess_data is defined earlier
+cleaned_2021 <- preprocess_data(df_2021)
+cleaned_2022 <- preprocess_data(df_2022)
+cleaned_2023 <- preprocess_data(df_2023)
+cleaned_2024 <- preprocess_data(df_2024)
+
+df <- bind_rows(cleaned_2021, cleaned_2022, cleaned_2023, cleaned_2024)
+
+# Sample coordinates for cities (add more coordinates as needed)
+city_coords <- data.frame(
+  BYROO = c("Haapsalu", "Jõgeva", "Põlva", "Võru", "Tartu", "Viljandi", "Narva", "Pärnu", 
+            "Kuressaare", "Valga", "Tallinn", "Rakvere", "Jõhvi", "Rapla", "Paide", "Kärdla", "Saue"),
+  lat = c(58.9431, 58.7453, 58.059, 57.8443, 58.378, 58.363, 59.3772, 58.3859, 
+          58.2528, 57.775, 59.437, 59.3464, 59.394, 58.9911, 58.8854, 58.9981, 59.3227),
+  lng = c(23.5375, 26.3936, 27.0716, 27.0038, 26.729, 25.598, 28.179, 24.497, 
+          22.484, 26.0458, 24.7535, 26.3557, 27.421, 24.7952, 25.5622, 22.7497, 24.561)
+)
+
+# Preprocess the data to calculate pass rates
+city_summary <- df %>%
+  filter(KATEGOORIA == "B") %>%  # Only category B
+  mutate(month = month(KUUPAEV, label = TRUE)) %>%  # Convert month to label format
+  group_by(BYROO, month, VIIMANE_AUTOKOOL) %>%
+  summarise(
+    total_exams = n(),
+    passes = sum(SEISUND %in% c("SOORITATUD"), na.rm = TRUE),
+    pass_rate = passes / total_exams,
+    .groups = "drop"
+  ) %>%
+  filter(total_exams > 20)  # Only include schools with more than 50 exams
+
+top_months_summary <- city_summary %>%
+  group_by(BYROO, month) %>%
+  summarise(
+    avg_pass_rate = mean(pass_rate),
+    total_exams = sum(total_exams),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_pass_rate)) %>%
+  group_by(BYROO) %>%
+  slice_head(n = 3) %>%
+  summarise(
+    month_table = paste0(
+      "<table border='1' cellpadding='5' style='border-collapse: collapse;'>",
+      "<tr><th>Month</th><th>Pass Rate</th><th>Total Exams</th></tr>",
+      paste(
+        glue::glue(
+          "<tr><td>{month}</td><td>{percent(avg_pass_rate, accuracy = 0.1)}</td><td>{total_exams}</td></tr>"
+        ),
+        collapse = ""
+      ),
+      "</table>"
+    ),
+    .groups = "drop"
+  )
+
+# Create the top 3 driving schools for each city
+top_schools_summary <- city_summary %>%
+  group_by(BYROO, VIIMANE_AUTOKOOL) %>%
+  summarise(
+    avg_pass_rate = mean(pass_rate),
+    total_exams = sum(total_exams),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_pass_rate)) %>%
+  group_by(BYROO) %>%
+  slice_head(n = 3) %>%
+  summarise(
+    school_table = paste0(
+      "<table border='1' cellpadding='5' style='border-collapse: collapse;'>",
+      "<tr><th>Driving School</th><th>Pass Rate</th><th>Total Exams</th></tr>",
+      paste(
+        glue::glue(
+          "<tr><td>{VIIMANE_AUTOKOOL}</td><td>{percent(avg_pass_rate, accuracy = 0.1)}</td><td>{total_exams}</td></tr>"
+        ),
+        collapse = ""
+      ),
+      "</table>"
+    ),
+    .groups = "drop"
+  )
+
+valid_byroo <- city_summary %>%
+  group_by(BYROO) %>%
+  summarise(total_exams_city = sum(total_exams), .groups = "drop") %>%
+  filter(total_exams_city > 50)  # Only include cities with more than 50 exams
+
+# Filter city summaries to include only valid BYROO cities
+top_months_summary <- top_months_summary %>% filter(BYROO %in% valid_byroo$BYROO)
+top_schools_summary <- top_schools_summary %>% filter(BYROO %in% valid_byroo$BYROO)
+
+# Combine coordinates with filtered summaries
+city_summary_label <- city_coords %>%
+  filter(BYROO %in% valid_byroo$BYROO) %>%  # Only include cities with sufficient data
+  left_join(top_months_summary, by = "BYROO") %>%
+  left_join(top_schools_summary, by = "BYROO") %>%
+  mutate(
+    popup_label = paste0(
+      "<b>City: ", BYROO, "</b><br><br>",
+      "<b>Top Months (Highest Pass Rates):</b><br>", ifelse(is.na(month_table), "No data available", month_table), "<br><br>",
+      "<b>Top Driving Schools (Highest Pass Rates):</b><br>", ifelse(is.na(school_table), "No data available", school_table)
+    )
+  )
+
+ui <- fluidPage(
+  titlePanel("Driving Exam Success Rate by City"),
+  fluidRow(
+    column(8,  # Left column for the map
+           leafletOutput("exam_map", width = "100%", height = "800px")  # Full width for the map
+    ),
+    column(4,  # Right column for text
+           h3("Explanation of the Map"),
+           p("This interactive map shows the driving exam success rates across different cities in Estonia."),
+           p("When you click on a city, a pop-up appears showing:"),
+           tags$ul(
+             tags$li("The top 3 months with the highest pass rates."),
+             tags$li("The top 3 driving schools with the highest pass rates.")
+           ),
+           p("Only cities with more than 50 recorded driving exams for category B are included.")
+    )
+  )
+)
+
+# Shiny app server
+server <- function(input, output, session) {
+  output$exam_map <- renderLeaflet({
+    leaflet(data = city_summary_label) %>%
+      addTiles() %>%
+      addCircleMarkers(
+        ~lng, ~lat,
+        color = "blue",
+        radius = 10,
+        stroke = FALSE,
+        fillOpacity = 0.8,
+        label = lapply(city_summary_label$popup_label, HTML),
+        labelOptions = labelOptions(
+          style = list("font-weight" = "bold", "color" = "black"),
+          direction = "auto"
+        )
+      )
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+```
+
+```{r}
+scatter_data <- city_summary %>%
+  group_by(BYROO, month) %>%
+  summarise(mean_pass_rate = mean(pass_rate, na.rm = TRUE), .groups = "drop") %>%
+  mutate(month = factor(month, levels = month.abb))  # Ensure months are in calendar order
+
+# Create the scatterplot
+library(ggplot2)
+ggplot(scatter_data, aes(x = month, y = mean_pass_rate, color = BYROO)) +
+  geom_point(size = 3, alpha = 0.8) +  # Scatter points for mean pass rates
+  geom_line(aes(group = BYROO), size = 1, alpha = 0.7) +  # Line connecting points for each BYROO
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +  # Y-axis in percentage
+  labs(
+    title = "Mean Pass Rate by Month and City",
+    subtitle = "Each point represents the mean pass rate for a city in a given month",
+    x = "Month",
+    y = "Mean Pass Rate",
+    color = "City (BYROO)"
+  ) +
+  theme_minimal(base_size = 14) +  # Minimalistic theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+    legend.position = "bottom"  # Place legend at the bottom
+  )
+```
+
+```{r}
+# Load necessary libraries
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# Read the shapefile (make sure to set the correct file path)
+shapefile_path <- "maakond.shp"  # Replace with the correct path to your .shp file
+estonia_map <- st_read(shapefile_path)
+
+# Preview the shapefile to check column names
+print(estonia_map)
+
+# Mapping BYROO to counties
+byroo_to_county <- data.frame(
+  BYROO = c("Haapsalu", "Jõgeva", "Põlva", "Võru", "Tartu", "Viljandi", "Narva", "Pärnu", 
+            "Kuressaare", "Valga", "Tallinn", "Rakvere", "Jõhvi", "Rapla", "Paide", "Kärdla", "Saue"),
+  COUNTY = c("Lääne maakond", "Jõgeva maakond", "Põlva maakond", "Võru maakond", "Tartu maakond", "Viljandi maakond", "Ida-Viru maakond", "Pärnu maakond",
+             "Saare maakond", "Valga maakond", "Harju maakond", "Lääne-Viru maakond", "Ida-Viru maakond", "Rapla maakond", "Järva maakond", "Hiiu maakond", "Harju maakond")
+)
+
+# Summarize pass rates by county
+county_summary <- city_summary %>%
+  left_join(byroo_to_county, by = "BYROO") %>%
+  group_by(COUNTY) %>%
+  summarise(avg_pass_rate = mean(pass_rate, na.rm = TRUE), .groups = "drop")
+
+# Merge county pass rate data with the shapefile
+estonia_map <- estonia_map %>%
+  left_join(county_summary, by = c("MNIMI" = "COUNTY"))  # Use the correct column name from shapefile
+
+# Plot the static map
+plot <- ggplot(estonia_map) +
+  geom_sf(aes(fill = avg_pass_rate), color = "black") +  # Color counties by pass rate
+  scale_fill_gradient(low = "white", high = "darkred", na.value = "grey90", labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Driving Exam Pass Rates by County in Estonia",
+    subtitle = "Color indicates average pass rate for category B exams (2021–2024)",
+    fill = "Pass Rate"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank()
+  )
+
+ggsave(filename = "estonia_pass_rate_map.png", plot = plot, width = 10, height = 7, dpi = 300)
+
+
+```
+```{r}
+install.packages("rgeoboundaries")
+```
+
