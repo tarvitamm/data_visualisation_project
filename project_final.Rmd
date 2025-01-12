@@ -9,6 +9,9 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+
+This is the original shiny app, with an interactive interface to filter out best driving schools and best months for taking a driving test.
+PS: This is not the map used on the poster, just a previous solution.
 ```{r}
 # Load necessary libraries
 library(shiny)
@@ -171,45 +174,41 @@ server <- function(input, output, session) {
 shinyApp(ui = ui, server = server)
 ```
 
-```{r}
-scatter_data <- city_summary %>%
-  group_by(BYROO, month) %>%
-  summarise(mean_pass_rate = mean(pass_rate, na.rm = TRUE), .groups = "drop") %>%
-  mutate(month = factor(month, levels = month.abb))  # Ensure months are in calendar order
-
-# Create the scatterplot
-library(ggplot2)
-ggplot(scatter_data, aes(x = month, y = mean_pass_rate, color = BYROO)) +
-  geom_point(size = 3, alpha = 0.8) +  # Scatter points for mean pass rates
-  geom_line(aes(group = BYROO), size = 1, alpha = 0.7) +  # Line connecting points for each BYROO
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +  # Y-axis in percentage
-  labs(
-    title = "Mean Pass Rate by Month and City",
-    subtitle = "Each point represents the mean pass rate for a city in a given month",
-    x = "Month",
-    y = "Mean Pass Rate",
-    color = "City (BYROO)"
-  ) +
-  theme_minimal(base_size = 14) +  # Minimalistic theme
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
-    legend.position = "bottom"  # Place legend at the bottom
-  )
-```
-
+The static map, which compares B category driving exams between Estonian counties. 
+PS: This is the map used on the poster.
 ```{r}
 library(sf)
 library(ggplot2)
 library(dplyr)
 library(scales)
 library(lubridate)
+library(showtext)
+library(sysfonts)
 
+# Add League Spartan from Google Fonts
+font_add_google("League Spartan", "league_spartan")
+
+# Enable showtext
+showtext_auto()
 # Load and clean data
 df_2021 <- read.csv("se_2021.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 df_2022 <- read.csv("se_2022.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 df_2023 <- read.csv("se_2023.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 df_2024 <- read.csv("se_2024.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE)
 
+preprocess_data <- function(df) {
+  df <- df %>%
+    # Remove rows with missing important data
+    filter(!is.na(KUUPAEV), !is.na(KATEGOORIA), !is.na(SEISUND)) %>%
+    # Keep only valid category B exams
+    filter(KATEGOORIA == "B") %>%
+    # Remove unnecessary columns if present (optional)
+    select(EKSAMI_SOORITAJA, KUUPAEV, BYROO, VIIMANE_AUTOKOOL, SEISUND)  # Ensures the key columns appear first
+
+  # Print basic stats
+  cat("Number of rows after preprocessing:", nrow(df), "\n")
+  return(df)
+}
 # Assume preprocess_data is defined earlier
 cleaned_2021 <- preprocess_data(df_2021)
 cleaned_2022 <- preprocess_data(df_2022)
@@ -229,7 +228,6 @@ df_first_attempt <- df %>%
 overall_pass_rate <- mean(df_first_attempt$SEISUND == "SOORITATUD", na.rm = TRUE) * 100
 cat("Overall First Attempt Pass Rate: ", round(overall_pass_rate, 2), "%\n\n")
 
-# Mapping BYROO to counties
 byroo_to_county <- data.frame(
   BYROO = c("Haapsalu", "Jõgeva", "Põlva", "Võru", "Tartu", "Viljandi", "Narva", "Pärnu", 
             "Kuressaare", "Valga", "Tallinn", "Rakvere", "Jõhvi", "Rapla", "Paide", "Kärdla", "Saue"),
@@ -237,14 +235,14 @@ byroo_to_county <- data.frame(
              "Saare maakond", "Valga maakond", "Harju maakond", "Lääne-Viru maakond", "Ida-Viru maakond", "Rapla maakond", "Järva maakond", "Hiiu maakond", "Harju maakond")
 )
 
+
 # Summarize pass rates and total exams by county for Category B exams only
 county_summary <- df_first_attempt %>%
-  filter(KATEGOORIA == "B") %>%  # Only category B exams
   left_join(byroo_to_county, by = "BYROO") %>%
   group_by(COUNTY) %>%
   summarise(
     total_exams = n(),  # Count total exams
-    avg_pass_rate = mean(SEISUND == "SOORITATUD", na.rm = TRUE) * 100,  # Calculate pass rate
+    avg_pass_rate = mean(SEISUND == "SOORITATUD", na.rm = TRUE),  # Calculate pass rate
     .groups = "drop"
   )
 
@@ -260,14 +258,38 @@ estonia_map <- st_read(shapefile_path)
 estonia_map <- estonia_map %>%
   left_join(county_summary, by = c("MNIMI" = "COUNTY"))  # Use correct column for county
 
-# Plot the map
+estonia_map_centroids <- estonia_map %>%
+  st_centroid() %>%  # Calculate centroids
+  st_coordinates() %>%  # Extract x and y coordinates
+  as.data.frame() %>%
+  cbind(estonia_map) %>%
+  rename(x = X, y = Y)  # Rename coordinates for clarity
+
+# Adjust the y-coordinate for Pärnu
+estonia_map_centroids <- estonia_map_centroids %>%
+  mutate(
+    y = ifelse(MNIMI == "Pärnu maakond", y + 7000, y),
+    y = ifelse(MNIMI == "Harju maakond", y + 4000, y),
+    x = ifelse(MNIMI == "Lääne maakond", x + 6000, x)  
+  )
+
+
 plot <- ggplot(estonia_map) +
-  geom_sf(aes(fill = avg_pass_rate), color = "black") +
+  geom_sf(aes(fill = avg_pass_rate), color = "black") +  # Fill color based on pass rate
+  geom_text(
+    data = estonia_map_centroids,
+    aes(x = x, y = y, label = total_exams, size = total_exams),  # Use numeric coordinates
+    color = "black",
+    fontface = "bold",
+    family = "league_spartan"  # Use League Spartan font
+  ) +
   scale_fill_gradient(low = "white", high = "darkred", na.value = "grey90", labels = percent_format(accuracy = 1)) +
+  scale_size_continuous(range = c(4, 5.2)) +  # Control size range
   labs(
     title = "Driving Exam Pass Rates by County in Estonia (First Attempt Only)",
     subtitle = "Color indicates average pass rate for first attempts at Category B exams (2021–2024)",
-    fill = "Pass Rate"
+    fill = "Pass Rate",
+    size = "Number of Exams"
   ) +
   theme_minimal(base_size = 14) +
   theme(
@@ -276,12 +298,8 @@ plot <- ggplot(estonia_map) +
     axis.text = element_blank(),
     axis.ticks = element_blank()
   )
-
 # Save the plot as an image
 ggsave(filename = "estonia_pass_rate_map_first_attempts.png", plot = plot, width = 10, height = 7, dpi = 300)
-
 ```
-```{r}
-install.packages("rgeoboundaries")
 ```
 
